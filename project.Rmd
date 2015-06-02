@@ -1,0 +1,145 @@
+---
+title: "Practical Machine Learning Project"
+author: "Tarek Dib"
+date: "May 24, 2015"
+output: html_document
+---
+
+# Introducion
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+# Loading Data
+The data used in the project came from [this link](http://groupware.les.inf.puc-rio.br/har). Two data sets were used in the project. The training data set was used to build up the model and the test data set was used to predict the outcome. There are 19622 observations in the training data set, and 20 cases in the test data set.
+```{r}
+# URL for the training data set
+trainingUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+# URL for the testing dataset
+testingUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# Use RCurl library to get URL's. Reproducibility.
+library(RCurl)
+trn <- getURL(trainingUrl)
+tst <- getURL(testingUrl)
+
+# Read the data sets
+training <- read.csv(textConnection(trn))
+test <- read.csv(textConnection(tst))
+```
+
+# Processing Data
+```{r}
+# Response variable for the training set
+y <- training$classe
+# Keep only columns with no missing or NA values, and keep numeric columns only. training
+df <- training[sapply(training, function(x) !any(is.na(x)|x=='')&is.numeric(x))]
+# Test data set
+testDF <- test[sapply(test, function(x) !any(is.na(x)|x=='')&is.numeric(x))]
+# Remove irrelevant columns: X, time_stamp and window. training
+rem <- grepl("X|timestamp|window", names(df))
+# Test data set
+testREM <- grepl("X|timestamp|window|problem_id", names(testDF))
+# Processed training data set: df1
+df1 <- df[, !rem]
+# Cleaned training data set
+trainingClean <- data.frame(df1, y)
+# Processed test data set: testDF
+testDF <- testDF[, !testREM]
+
+# Remove variables with high correlation with other variables. variables with correlation 0.5 or greater are removed
+library(caret)
+correl <- cor(trainingClean[,-length(trainingClean)])
+removecol <- findCorrelation(correl,cutoff=0.5)
+trainingClean <- trainingClean[,-removecol]
+testDF  <- testDF[,-removecol]
+```
+
+# Exploring Data
+```{r}
+# Count and percentage of each class in the output variable 'classe'
+t_count <- table(y)
+count_df <- as.data.frame(t_count)
+names(count_df) <- c("Type", "Count")
+# Percentage of each class
+count_df$Percentage <- round((count_df$Count/sum(count_df$Count))*100,1)
+count_df
+```
+
+# Predictive Model - Random Forest
+```{r}
+set.seed(133352) # For reproducibile purpose
+library(randomForest)
+inTrain <- createDataPartition(trainingClean$y, p=0.70, list=F)
+trainData <- trainingClean[inTrain, ]
+testData <- trainingClean[-inTrain, ]
+
+# Predictive model
+controlRf <- trainControl(method="cv", 5)
+modelRf <- train(y ~ ., data=trainData, method="rf", trControl=controlRf, ntree=250)
+modelRf
+```
+
+# Model Performance and Accuracy 
+```{r}
+predTrainRf <- predict(modelRf, trainData)
+predTestRf <- predict(modelRf, testData)
+confusionMatrix(trainData$y, predTrainRf)$overall[1]  # With 14 predictors, accuracy of model on the training data is 100%
+confusionMatrix(testData$y, predTestRf)$overall[1]   # Accuracy on the the test data is about 97.3%
+
+# Calculating accuracy using "predict" function. Accuracy on the training and test data respectively
+(accuracyTrainRF <- mean(predTrainRf == trainData$y))
+(accuracyTestRF <- mean(predTestRf == testData$y))
+
+# Predicting for the 20 test cases
+result <- predict(modelRf, testDF)
+result
+```
+
+# Cross Validation - Out-Of-Bag Error Estimate - Random Forest Package
+Breiman's random Forest algorithm does not require cross-validation or a separate test set to get an unbiased estimate of the test set error. It is estimated internally, during the run.
+```{r, fig.width=10, fig.height=6}
+# Plot of the error rate
+library(randomForest)
+modRF <- randomForest(y ~., data = trainData, importance = T)
+oob_error_est <- as.data.frame(modRF$err.rate)$OOB
+x <- seq(1,length(oob_error_est))
+plot(x, oob_error_est, type="l", col='blue', main="Out-Of-Bag Error Estimate", xlab="Number of Trees", ylab="Error Rate")
+```
+
+# Variable Importance
+"In every tree grown in the forest, put down the oob cases and count the number of votes cast for the correct class. Now randomly permute the values of variable m in the oob cases and put these cases down the tree. Subtract the number of votes for the correct class in the variable-m-permuted oob data from the number of votes for the correct class in the untouched oob data. The average of this number over all trees in the forest is the raw importance score for variable m.
+
+If the values of this score from tree to tree are independent, then the standard error can be computed by a standard computation. The correlations of these scores between trees have been computed for a number of data sets and proved to be quite low, therefore we compute standard errors in the classical way, divide the raw score by its standard error to get a z-score, ands assign a significance level to the z-score assuming normality." Breiman.
+```{r}
+varImpPlot(modRF)
+importance(modRF)
+```
+
+```{r, fig.width=10, fig.height=8}
+library(corrplot)
+M <- cor(trainData[, -length(names(trainData))])
+corrplot(M, method = "color")
+```
+
+# Predictive Model - Support Vector Machine
+```{r}
+set.seed(133456)
+trC <- trainControl(method="cv",number=5)
+modSVM <- train(y~.,data=trainData,method="svmRadial", trControl = trC)
+modSVM
+answerSVM <- predict(modSVM,test)
+
+# Or use e1071 package
+set.seed(325)
+library(e1071)
+svm.model <- svm(y ~., data = trainData)
+svm.predTrain <- predict(svm.model, trainData[,-length(trainData)])
+(accuracyTrainSVM <- mean(svm.predTrain == trainData$y))
+svm.predTest <- predict(svm.model, testData[,-length(testData)])
+(accuracyTestSVM <- mean(svm.predTest == testData$y))
+```
+
+# Accuracy - Random Forest Model vs. Support Vector Machine Model 
+```{r}
+cbind(accuracyTrainRF, accuracyTrainSVM)
+cbind(accuracyTestRF, accuracyTestSVM)
+```
